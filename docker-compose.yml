@@ -1,0 +1,189 @@
+version: '3.8'
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    container_name: runner-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  api_gateway:
+    build:
+      context: .
+      dockerfile: api_gateway/Dockerfile
+    container_name: runner-api-gateway
+    ports:
+      - "8002:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
+      - DEFAULT_PROXY_USER_ID=${DEFAULT_PROXY_USER_ID:-1}
+    depends_on:
+      - redis
+      - tool_executor
+    restart: unless-stopped
+
+  tool_registry:
+    build:
+      context: .
+      dockerfile: tool_registry/Dockerfile
+    container_name: runner-tool-registry
+    ports:
+      - "8003:8003"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  seeder:
+    build:
+      context: .
+      dockerfile: scripts/Dockerfile.seeder
+    container_name: runner-seeder
+    environment:
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
+    depends_on:
+      tool_registry:
+        condition: service_healthy
+    restart: "no"
+
+  tool_executor:
+    build:
+      context: .
+      dockerfile: tool_executor/Dockerfile
+    container_name: runner-tool-executor
+    ports:
+      - "8004:8004"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - TOOL_REGISTRY_URL=${TOOL_REGISTRY_URL}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - redis
+      - tool_registry
+    restart: unless-stopped
+
+  tool_curl:
+    build:
+      context: tools/curl
+      dockerfile: Dockerfile
+    image: backend_runner-curl
+    container_name: runner-tool-curl-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_ls:
+    build:
+      context: tools/ls
+      dockerfile: Dockerfile
+    image: backend_runner-ls
+    container_name: runner-tool-ls-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_cat:
+    build:
+      context: tools/cat
+      dockerfile: Dockerfile
+    image: backend_runner-cat
+    container_name: runner-tool-cat-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_nmap:
+    build:
+      context: tools/nmap
+      dockerfile: Dockerfile
+    image: backend_runner-nmap
+    container_name: runner-tool-nmap-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_sqlmap:
+    build:
+      context: tools/sqlmap
+      dockerfile: Dockerfile
+    image: backend_runner-sqlmap
+    container_name: runner-tool-sqlmap-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_nuclei:
+    build:
+      context: tools/nuclei
+      dockerfile: Dockerfile
+    image: backend_runner-nuclei
+    container_name: runner-tool-nuclei-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_xsstrike:
+    build:
+      context: tools/xsstrike
+      dockerfile: Dockerfile
+    image: backend_runner-xsstrike
+    container_name: runner-tool-xsstrike-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_gobuster:
+    build:
+      context: tools/gobuster
+      dockerfile: Dockerfile
+    image: backend_runner-gobuster
+    container_name: runner-tool-gobuster-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_nikto:
+    build:
+      context: tools/nikto
+      dockerfile: Dockerfile
+    image: backend_runner-nikto
+    container_name: runner-tool-nikto-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_hydra:
+    build:
+      context: tools/hydra
+      dockerfile: Dockerfile
+    image: backend_runner-hydra
+    container_name: runner-tool-hydra-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_radare2:
+    build:
+      context: tools/radare2
+      dockerfile: Dockerfile
+    image: backend_runner-radare2
+    container_name: runner-tool-radare2-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  
+  tool_osquery:
+    build:
+      context: tools/osquery
+      dockerfile: Dockerfile
+    image: backend_runner-osquery
+    container_name: runner-tool-osquery-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_trivy:
+    build:
+      context: tools/trivy
+      dockerfile: Dockerfile
+    image: backend_runner-trivy
+    container_name: runner-tool-trivy-builder
+    entrypoint: ["echo", "imagen lista"]
+
+  tool_wapiti:
+    build:
+      context: tools/wapiti
+      dockerfile: Dockerfile
+    image: backend_runner-wapiti
+    container_name: runner-tool-wapiti-builder
+    entrypoint: ["echo", "imagen lista"]
