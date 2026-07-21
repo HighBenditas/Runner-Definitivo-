@@ -1,4 +1,7 @@
+from typing import Optional
 from pydantic import BaseModel
 
+
 class SesionCreate(BaseModel):
-    objetivo_id: int
+    id_usuario: Optional[int] = None
+    objetivo_id: Optional[int] = None

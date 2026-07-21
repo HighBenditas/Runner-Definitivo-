@@ -9,13 +9,13 @@ class SesionRepository:
     @staticmethod
     async def crear_sesion(
         session: AsyncSession,
-        objetivo_id: int
+        id_usuario: int
     ):
 
         query = (
             insert(SesionEscaneo)
             .values(
-                objetivo_id=objetivo_id,
+                id_usuario=id_usuario,
                 estado="pendiente"
             )
             .returning(SesionEscaneo.id)
