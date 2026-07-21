@@ -62,7 +62,7 @@ flowchart TD
 5. El archivo `run.py` recibe los parámetros en JSON, ejecuta la herramienta y normaliza la salida.
 6. El resultado se almacena en la base de datos.
 7. El contenedor de la herramienta se elimina al finalizar.
-
+8. 
 ## Estructura del proyecto
 
 ```text
