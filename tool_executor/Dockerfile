@@ -5,4 +5,4 @@ COPY shared/ ./shared/
 COPY tool_executor/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY tool_executor/ ./tool_executor/
-CMD ["uvicorn", "tool_executor.app.main:app", "--host", "0.0.0.0", "--port", "8004"]
+CMD ["uvicorn","tool_executor.app.main:app","--host","0.0.0.0","--port","8004"]

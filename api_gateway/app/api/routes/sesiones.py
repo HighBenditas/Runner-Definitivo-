@@ -6,10 +6,18 @@ from shared.schemas.sesion_schema import SesionCreate
 from api_gateway.app.core.database import get_db
 from api_gateway.app.services.sesion_service import SesionService
 
+from shared.auth import verificar_usuario
+from shared.internal_auth import verificar_token_interno
+
+
 
 router = APIRouter(
     prefix="/sesiones",
-    tags=["Sesiones"]
+    tags=["Sesiones"],
+    dependencies=[
+        Depends(verificar_token_interno),
+        Depends(verificar_usuario)
+    ]
 )
 
 

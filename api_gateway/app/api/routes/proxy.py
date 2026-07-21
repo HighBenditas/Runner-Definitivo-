@@ -1,15 +1,25 @@
 import os
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends, Header
+
+from shared.auth import verificar_usuario
+from shared.internal_auth import verificar_token_interno
 
 from shared.internal_auth import internal_headers
 
-router = APIRouter(prefix="/proxy", tags=["Proxy"])
+router = APIRouter(
+    prefix="/proxy",
+    tags=["Proxy"],
+    dependencies=[
+        Depends(verificar_token_interno),
+        Depends(verificar_usuario)
+    ]
+)
 
-TOOL_REGISTRY_URL = "http://tool_registry:8003"
-TOOL_EXECUTOR_URL = "http://tool_executor:8004"
-API_GATEWAY_URL = "http://api_gateway:8000"
+TOOL_REGISTRY_URL = "http://runner-tool-registry:8003"
+TOOL_EXECUTOR_URL = "http://runner-tool-executor:8004"
+API_GATEWAY_URL = "http://runner-api-gateway:8000"
 
 # Usuario por defecto para el flujo de auto-creación del proxy (cuando llega una
 # ejecución sin sesion_id). Antes estaba hardcodeado en 1; ahora es configurable.
@@ -135,12 +145,22 @@ async def listar_tareas(limite: int = 20):
 
 
 @router.post("/ejecutar")
-async def ejecutar_herramienta(request: Request):
+async def ejecutar_herramienta(
+    request: Request,
+    authorization: str = Header(None)
+):
     body = await request.json()
     sesion_id = body.get("sesion_id")
 
     try:
-        async with httpx.AsyncClient(timeout=60, headers=internal_headers()) as client:
+        async with httpx.AsyncClient(
+            timeout=60,
+            headers={
+                **internal_headers(),
+                "Authorization": authorization
+            }
+        ) as client:
+            
             if not sesion_id:
                 r_obj = await client.post(
                     f"{API_GATEWAY_URL}/objetivos/",
@@ -169,7 +189,14 @@ async def ejecutar_herramienta(request: Request):
                 "orden_ejecucion": body.get("orden_ejecucion", 1),
             }
 
-            r = await client.post(f"{TOOL_EXECUTOR_URL}/ejecutar/", json=payload)
+            r = await client.post(
+                f"{TOOL_EXECUTOR_URL}/ejecutar/",
+                json=payload,
+                headers={
+                    **internal_headers(),
+                    "Authorization": authorization
+                }
+            )
             if r.status_code != 200:
                 raise HTTPException(status_code=r.status_code, detail=r.text)
             return r.json()

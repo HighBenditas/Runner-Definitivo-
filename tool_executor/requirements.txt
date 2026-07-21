@@ -5,3 +5,5 @@ asyncpg
 python-dotenv
 pydantic
 httpx
+docker
+PyJWT

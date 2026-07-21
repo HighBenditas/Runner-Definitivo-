@@ -2,7 +2,6 @@ import asyncio
 import json
 import time
 import logging
-
 import httpx
 
 from shared.database.session import SessionLocal

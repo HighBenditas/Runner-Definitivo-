@@ -7,3 +7,6 @@ pydantic
 passlib[bcrypt]
 python-jose
 httpx
+PyJWT
+cryptography
+email-validator

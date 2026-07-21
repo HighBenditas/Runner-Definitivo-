@@ -3,6 +3,62 @@
 Este documento detalla la arquitectura y el flujo de trabajo estandarizado para integrar nuevas herramientas de ciberseguridad, como herramientas de pentesting, fuerza bruta, ingeniería inversa, entre otras, en el Orquestador `tool_executor` de Dani-ETH.
 
 ---
+## Control de objetivos de escaneo
+
+### Decisión de diseño
+
+Actualmente el Runner permite ejecutar análisis sobre cualquier objetivo proporcionado por el usuario, pudiendo ser una dirección IP, dominio o URL.
+
+Ejemplos de objetivos permitidos:
+
+- 8.8.8.8
+- empresa.cl
+- 192.168.1.10
+- https://api.empresa.cl
+
+Esta decisión fue adoptada para mantener flexibilidad durante la ejecución de pruebas de seguridad y permitir evaluar distintos entornos definidos por cada usuario.
+
+### Consideraciones de seguridad
+
+Actualmente el modelo de ejecución opera bajo un esquema de confianza del usuario, donde se espera que los objetivos ingresados correspondan a activos sobre los cuales el usuario posee autorización de evaluación.
+
+La plataforma no valida actualmente la propiedad del dominio o IP antes de ejecutar un análisis, por lo que el usuario es responsable de asegurar que cuenta con los permisos correspondientes.
+
+### Riesgos identificados
+
+El modelo de objetivo libre puede permitir que un usuario solicite análisis sobre activos de terceros sin autorización, generando posibles riesgos legales y operacionales.
+
+### Controles actuales
+
+Para reducir riesgos, la arquitectura implementa:
+
+- Separación lógica por tenants.
+- Registro de solicitudes de ejecución.
+- Ejecución aislada de herramientas mediante contenedores Docker.
+- Acceso controlado al Docker Engine mediante Docker Socket Proxy.
+
+### Mejora futura propuesta
+
+Para una versión productiva se propone implementar un sistema de objetivos autorizados por tenant (allowlist).
+
+Ejemplo:
+
+Tenant: Empresa ABC
+
+Objetivos registrados:
+
+- empresa.cl
+- api.empresa.cl
+- 10.0.0.15
+- 10.0.0.20
+
+Antes de ejecutar un análisis, el backend validaría que el objetivo solicitado pertenece a la lista autorizada del tenant.
+
+Si está registrado:
+→ Se permite la ejecución.
+
+Si no está registrado:
+→ La solicitud es rechazada.
 
 ## 🔐 0. Multi-tenant y autenticación interna (setup obligatorio)
 
@@ -39,7 +95,158 @@ El diseño completo está en el repo del orquestador:
 `Orquestador_AI_ETH/Docs/multi_tenant_plan.md`.
 
 ---
+## Registro y sincronización de usuarios con Supabase Auth
 
+El Runner implementa un flujo de registro integrado con Supabase Auth para gestionar
+la identidad de los usuarios y mantener una referencia interna dentro de la base de datos
+del sistema.
+
+El proceso funciona de la siguiente manera:
+
+1. El cliente realiza una solicitud al endpoint:
+
+```http
+POST /auth/register
+
+
+el sistema ejecuta el siguiente flujo:
+
+El cliente envía sus datos de registro:
+{
+  "nombre": "Usuario Demo",
+  "email": "usuario@email.com",
+  "password": "password_segura",
+  "rol": "admin"
+}
+
+El API Gateway envía las credenciales hacia Supabase Auth.
+Supabase crea la identidad del usuario y devuelve un identificador único:
+UUID del usuario
+El Runner utiliza ese identificador como:
+external_id
+
+y crea el registro interno correspondiente en la tabla:
+
+public.usuarios
+
+La relación queda establecida de la siguiente forma:
+
+Supabase Auth
+      |
+      | UUID usuario
+      |
+      v
+public.usuarios.external_id
+
+Persistencia del usuario en la base de datos Runner
+
+La tabla interna usuarios almacena la información necesaria para asociar la identidad
+externa con los recursos propios del Runner.
+
+Estructura principal:
+
+usuarios
+--------------------------------
+id
+nombre
+email
+password_hash
+rol
+external_id
+created_at
+--------------------------------
+
+El campo:
+
+external_id
+
+corresponde directamente al UUID generado por Supabase Auth.
+
+Este identificador permite mantener la relación entre:
+
+Usuario autenticado en Supabase.
+Objetivos registrados.
+Sesiones de ejecución.
+Resultados de herramientas.
+Manejo de contraseñas
+
+La contraseña del usuario no es almacenada dentro de la base de datos del Runner.
+
+Supabase Auth es responsable de:
+
+Almacenamiento seguro de contraseñas.
+Generación de tokens JWT.
+Manejo de sesiones.
+Validación de identidad.
+
+Por esta razón, el campo:
+
+password_hash
+
+se mantiene únicamente como referencia interna:
+
+SUPABASE_AUTH
+
+indicando que la autenticación pertenece a un proveedor externo.
+
+Control de usuarios duplicados
+
+Para garantizar que un usuario de Supabase solo tenga un registro interno dentro
+del Runner se utiliza una restricción única sobre:
+
+external_id
+
+Configuración:
+
+CREATE UNIQUE INDEX ux_usuarios_external_id
+ON public.usuarios(external_id);
+
+Esto permite que el proceso sea idempotente:
+
+Si el usuario ya existe, se reutiliza el registro existente.
+Si el usuario no existe, se crea automáticamente.
+
+De esta forma se evita la creación de múltiples usuarios internos asociados a una
+misma identidad externa.
+
+Flujo completo multi-tenant
+
+El ciclo completo de una ejecución queda:
+
+Usuario
+   |
+   |
+   v
+Supabase Auth
+   |
+   | external_id (UUID)
+   |
+   v
+public.usuarios
+   |
+   | usuario_id
+   |
+   v
+objetivos
+   |
+   | objetivo_id
+   |
+   v
+sesiones
+   |
+   | sesion_id
+   |
+   v
+ejecuciones
+   |
+   v
+Resultados de herramientas
+
+Este diseño permite mantener aislamiento lógico entre clientes (tenants), asegurando que
+cada usuario opere únicamente sobre sus propios objetivos, sesiones y ejecuciones.
+
+
+Queda alineado con lo que realmente tienes implementado ahora: **Supabase Auth → external_id → usuarios → objetivos
 ## 🏗️ 1. Arquitectura Base ("Con peras y manzanas")
 
 Cada herramienta en nuestro ecosistema funciona como una "caja negra" independiente. El ciclo de vida de una herramienta es el siguiente:

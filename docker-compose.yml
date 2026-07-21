@@ -20,6 +20,9 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
       - DEFAULT_PROXY_USER_ID=${DEFAULT_PROXY_USER_ID:-1}
+      - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
     depends_on:
       - redis
       - tool_executor
@@ -57,23 +60,60 @@ services:
         condition: service_healthy
     restart: "no"
 
+  docker_proxy:
+      image: tecnativa/docker-socket-proxy
+      container_name: runner-docker-proxy
+      restart: unless-stopped
+      environment:
+        CONTAINERS: 1
+        IMAGES: 1
+        INFO: 1
+        POST: 1
+
+        AUTH: 0
+        BUILD: 0
+        COMMIT: 0
+        CONFIGS: 0
+        DISTRIBUTION: 0
+        EVENTS: 0
+        EXEC: 0
+        NETWORKS: 0
+        NODES: 0
+        PLUGINS: 0
+        SECRETS: 0
+        SERVICES: 0
+        SESSION: 0
+        SWARM: 0
+        SYSTEM: 0
+        TASKS: 0
+        VOLUMES: 0
+
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock:ro
+
   tool_executor:
-    build:
-      context: .
-      dockerfile: tool_executor/Dockerfile
-    container_name: runner-tool-executor
-    ports:
-      - "8004:8004"
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - TOOL_REGISTRY_URL=${TOOL_REGISTRY_URL}
-      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    depends_on:
-      - redis
-      - tool_registry
-    restart: unless-stopped
+      build:
+        context: .
+        dockerfile: tool_executor/Dockerfile
+
+      container_name: runner-tool-executor
+
+      ports:
+        - "8004:8004"
+
+      environment:
+        - DATABASE_URL=${DATABASE_URL}
+        - TOOL_REGISTRY_URL=${TOOL_REGISTRY_URL}
+        - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN}
+        - DOCKER_HOST=tcp://docker_proxy:2375
+        - SUPABASE_JWT_SECRET=${SUPABASE_JWT_SECRET}
+
+      depends_on:
+        - redis
+        - tool_registry
+        - docker_proxy
+
+      restart: unless-stopped
 
   tool_curl:
     build:
