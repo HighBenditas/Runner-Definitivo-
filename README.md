@@ -1,361 +1,507 @@
-# Guía de Integración de Herramientas - Dani-ETH Backend Runner
+# Dani-ETH — Backend Runner
 
-Este documento detalla la arquitectura y el flujo de trabajo estandarizado para integrar nuevas herramientas de ciberseguridad, como herramientas de pentesting, fuerza bruta, ingeniería inversa, entre otras, en el Orquestador `tool_executor` de Dani-ETH.
+Backend encargado de registrar, versionar y ejecutar herramientas de ciberseguridad dentro de contenedores Docker aislados.
 
----
-## Control de objetivos de escaneo
+El Runner recibe solicitudes desde el orquestador, valida la información de usuario, objetivo y sesión, selecciona la versión activa de cada herramienta, ejecuta el análisis en un contenedor efímero y almacena el resultado en PostgreSQL/Supabase.
 
-### Decisión de diseño
+> PRECAUCIÓN
+> Utiliza las herramientas únicamente sobre sistemas propios, laboratorios controlados o activos para los que cuentes con autorización explícita.
 
-Actualmente el Runner permite ejecutar análisis sobre cualquier objetivo proporcionado por el usuario, pudiendo ser una dirección IP, dominio o URL.
+## Contenido
 
-Ejemplos de objetivos permitidos:
+* [Características principales](#características-principales)
+* [Arquitectura](#arquitectura)
+* [Estructura del proyecto](#estructura-del-proyecto)
+* [Requisitos](#requisitos)
+* [Configuración](#configuración)
+* [Despliegue](#despliegue)
+* [Servicios y puertos](#servicios-y-puertos)
+* [Herramientas integradas](#herramientas-integradas)
+* [Multi-tenant y autenticación interna](#multi-tenant-y-autenticación-interna)
+* [Registro con Supabase Auth](#registro-con-supabase-auth)
+* [Endpoints principales](#endpoints-principales)
+* [Pruebas de la API](#pruebas-de-la-api)
+* [Integración de una herramienta nueva](#integración-de-una-herramienta-nueva)
+* [Operación y mantenimiento](#operación-y-mantenimiento)
+* [Seguridad de los objetivos](#seguridad-de-los-objetivos)
 
-- 8.8.8.8
-- empresa.cl
-- 192.168.1.10
-- https://api.empresa.cl
+## Características principales
 
-Esta decisión fue adoptada para mantener flexibilidad durante la ejecución de pruebas de seguridad y permitir evaluar distintos entornos definidos por cada usuario.
+* API Gateway desarrollado con FastAPI.
+* Registro centralizado de herramientas y versiones.
+* Activación de versiones y selección de una versión de respaldo.
+* Ejecución aislada mediante contenedores Docker efímeros.
+* Persistencia de usuarios, objetivos, sesiones, tareas y resultados.
+* Separación lógica de información por usuario o tenant.
+* Integración de identidad con Supabase Auth.
+* Autenticación interna entre el Runner y el orquestador.
+* Redis como servicio auxiliar.
+* Registro automático de herramientas mediante un servicio `seeder`.
+* Acceso controlado al Docker Engine mediante Docker Socket Proxy.
 
-### Consideraciones de seguridad
+## Arquitectura
 
-Actualmente el modelo de ejecución opera bajo un esquema de confianza del usuario, donde se espera que los objetivos ingresados correspondan a activos sobre los cuales el usuario posee autorización de evaluación.
+```mermaid
+flowchart TD
+    O[Orquestador] -->|Solicitud y token interno| G[API Gateway]
+    G --> R[Tool Registry]
+    G --> E[Tool Executor]
+    R --> DB[(PostgreSQL / Supabase)]
+    E --> DB
+    E --> P[Docker Socket Proxy]
+    P --> C[Contenedor efímero de herramienta]
+    C -->|Resultado JSON| E
+```
 
-La plataforma no valida actualmente la propiedad del dominio o IP antes de ejecutar un análisis, por lo que el usuario es responsable de asegurar que cuenta con los permisos correspondientes.
+### Flujo de ejecución
 
-### Riesgos identificados
+1. El orquestador envía una solicitud al API Gateway.
+2. El Runner relaciona la solicitud con un usuario, un objetivo y una sesión.
+3. Tool Registry obtiene la herramienta y su versión activa.
+4. Tool Executor inicia un contenedor Docker efímero con la imagen correspondiente.
+5. El archivo `run.py` recibe los parámetros en JSON, ejecuta la herramienta y normaliza la salida.
+6. El resultado se almacena en la base de datos.
+7. El contenedor de la herramienta se elimina al finalizar.
 
-El modelo de objetivo libre puede permitir que un usuario solicite análisis sobre activos de terceros sin autorización, generando posibles riesgos legales y operacionales.
+## Estructura del proyecto
 
-### Controles actuales
+```text
+backend_runner/
+├── api_gateway/              # Punto de entrada de la API
+├── tool_registry/            # Registro de herramientas y versiones
+├── tool_executor/            # Ejecución de herramientas en Docker
+├── tools/                    # Dockerfiles y adaptadores run.py
+├── scripts/
+│   ├── migrations/           # Migraciones de base de datos
+│   └── ...                   # Seeder y scripts auxiliares
+├── shared/                   # Modelos y componentes compartidos
+├── docker-compose.yml
+├── .env.example
+└── setup.ps1                 # Instalación limpia en Windows
+```
 
-Para reducir riesgos, la arquitectura implementa:
+Cada herramienta se mantiene de forma independiente:
 
-- Separación lógica por tenants.
-- Registro de solicitudes de ejecución.
-- Ejecución aislada de herramientas mediante contenedores Docker.
-- Acceso controlado al Docker Engine mediante Docker Socket Proxy.
+```text
+tools/
+└── nombre_herramienta/
+    ├── Dockerfile
+    └── run.py
+```
 
-### Mejora futura propuesta
+## Requisitos
 
-Para una versión productiva se propone implementar un sistema de objetivos autorizados por tenant (allowlist).
+Antes de levantar el Runner, instala o configura:
 
-Ejemplo:
+* Git.
+* Docker Desktop con contenedores Linux, o Docker Engine con Docker Compose.
+* Acceso a una base de datos PostgreSQL compatible, como Supabase, PostgreSQL local o Neon.
+* Un proyecto de Supabase configurado si se utilizará el registro mediante Supabase Auth.
 
-Tenant: Empresa ABC
+La base de datos PostgreSQL no está incluida en `docker-compose.yml`.
 
-Objetivos registrados:
+## Configuración
 
-- empresa.cl
-- api.empresa.cl
-- 10.0.0.15
-- 10.0.0.20
+### 1. Crear el archivo de variables de entorno
 
-Antes de ejecutar un análisis, el backend validaría que el objetivo solicitado pertenece a la lista autorizada del tenant.
+En PowerShell:
 
-Si está registrado:
-→ Se permite la ejecución.
+```powershell
+cd backend_runner
+Copy-Item .env.example .env
+```
 
-Si no está registrado:
-→ La solicitud es rechazada.
+En Linux o macOS:
 
-## 🔐 0. Multi-tenant y autenticación interna (setup obligatorio)
+```bash
+cd backend_runner
+cp .env.example .env
+```
 
-El runner ahora soporta aislamiento por cliente (tenant). Antes de usarlo en un
-entorno real hay que hacer **dos pasos manuales**:
+### 2. Configurar las variables principales
 
-1. **Migración de BD (una vez):** ejecutá
-   [`scripts/migrations/001_multi_tenant.sql`](scripts/migrations/001_multi_tenant.sql)
-   contra la Supabase del runner. Añade la columna `usuarios.external_id`
-   (el `uid` de Firebase del cliente), necesaria para el endpoint
-   `POST /usuarios/` (get-or-create de usuario por tenant).
+Edita `backend_runner/.env`:
 
-2. **Token interno compartido:** definí `INTERNAL_API_TOKEN` en el `.env` (el
-   mismo valor debe ir en el `.env` del orquestador). Todas las rutas
-   funcionales del runner exigen la cabecera `X-Internal-Token` con ese valor;
-   `GET /` de cada servicio queda público para los healthchecks. Si se deja
-   **vacío**, la autenticación interna se **desactiva** (modo desarrollo) y todo
-   sigue funcionando sin token — cómodo para probar, inseguro para producción.
+```env
+DATABASE_URL=postgresql+asyncpg://USUARIO:CONTRASENA@HOST:5432/NOMBRE_BASE_DATOS
+TOOL_REGISTRY_URL=http://tool_registry:8003
+INTERNAL_API_TOKEN=CAMBIA_ESTE_TOKEN
+```
 
-**Endpoints nuevos/relevantes del api_gateway (`:8002`):**
+Completa además las credenciales de Supabase indicadas en `.env.example` cuando utilices `POST /auth/register`.
 
-| Método | Ruta | Descripción |
-|---|---|---|
-| `POST` | `/usuarios/` | Get-or-create de usuario por `external_id` (uid de Firebase). Devuelve `usuario_id`. |
-| `POST` | `/objetivos/` | Crea un objetivo para un `usuario_id`. |
-| `POST` | `/sesiones/` | Crea una sesión para un `objetivo_id`. |
+`INTERNAL_API_TOKEN` debe tener el mismo valor en el Runner y en el orquestador. No subas el archivo `.env` al repositorio.
 
-El orquestador encadena estos tres por campaña para crear una sesión aislada por
-cliente. Además, `GET /ejecutar/tareas/{id}` del tool_executor acepta un
-`?usuario_id=` opcional: si se pasa, valida que la tarea pertenezca a ese usuario
-(responde `404` si no, para no delatar tareas ajenas).
+### 3. Ejecutar la migración multi-tenant
 
-El diseño completo está en el repo del orquestador:
-`Orquestador_AI_ETH/Docs/multi_tenant_plan.md`.
+Antes de utilizar el sistema en un entorno real, ejecuta una vez la migración:
 
----
-## Registro y sincronización de usuarios con Supabase Auth
+```text
+scripts/migrations/001_multi_tenant.sql
+```
 
-El Runner implementa un flujo de registro integrado con Supabase Auth para gestionar
-la identidad de los usuarios y mantener una referencia interna dentro de la base de datos
-del sistema.
+La migración incorpora `usuarios.external_id`, utilizado para asociar la identidad de Supabase Auth con el usuario interno del Runner.
 
-El proceso funciona de la siguiente manera:
+## Despliegue
 
-1. El cliente realiza una solicitud al endpoint:
+Desde `backend_runner`:
+
+```powershell
+docker compose up --build -d
+```
+
+Este comando:
+
+1. Construye los servicios FastAPI.
+2. levanta Redis y los componentes auxiliares.
+3. Construye las imágenes de las herramientas.
+4. Inicia API Gateway, Tool Registry y Tool Executor.
+5. Ejecuta el seeder para registrar las herramientas.
+
+Comprueba el estado de los servicios:
+
+```powershell
+docker compose ps
+```
+
+Comprueba las imágenes disponibles:
+
+```powershell
+docker image ls "backend_runner-*"
+```
+
+### Instalación limpia en Windows
+
+La carpeta `backend_runner` incluye el script `setup.ps1`:
+
+```powershell
+.\setup.ps1
+```
+
+El script elimina componentes anteriores administrados por el proyecto y reconstruye el sistema. Úsalo solamente cuando necesites una instalación limpia.
+
+## Servicios y puertos
+
+| Servicio      | Puerto del equipo | Puerto interno | Documentación                |
+| ------------- | ----------------- | -------------- | ---------------------------- |
+| API Gateway   | `8002`            | `8000`         | `http://localhost:8002/docs` |
+| Tool Registry | `8003`            | `8003`         | `http://localhost:8003/docs` |
+| Tool Executor | `8004`            | `8004`         | `http://localhost:8004/docs` |
+| Redis         | `6379`            | `6379`         | No utiliza Swagger           |
+
+El API Gateway es el punto de entrada recomendado para el orquestador y otros clientes de la API.
+
+## Herramientas integradas
+
+Cada herramienta posee su propia imagen Docker y un adaptador `run.py`.
+
+| Herramienta | Imagen Docker             | Uso principal                                                    |
+| ----------- | ------------------------- | ---------------------------------------------------------------- |
+| Nmap        | `backend_runner-nmap`     | Escaneo de puertos y detección de servicios                      |
+| Nuclei      | `backend_runner-nuclei`   | Detección de vulnerabilidades mediante templates                 |
+| SQLMap      | `backend_runner-sqlmap`   | Pruebas autorizadas de inyección SQL                             |
+| XSStrike    | `backend_runner-xsstrike` | Pruebas autorizadas de vulnerabilidades XSS                      |
+| Gobuster    | `backend_runner-gobuster` | Enumeración de rutas, directorios y subdominios                  |
+| Nikto       | `backend_runner-nikto`    | Evaluación de configuraciones y fallos comunes en servidores web |
+| Trivy       | `backend_runner-trivy`    | Análisis de vulnerabilidades en imágenes y sistemas de archivos  |
+| OSQuery     | `backend_runner-osquery`  | Consulta de información del sistema mediante SQL                 |
+| Wapiti      | `backend_runner-wapiti`   | Análisis automatizado de aplicaciones web                        |
+| Hydra       | `backend_runner-hydra`    | Auditorías autorizadas de credenciales                           |
+| Radare2     | `backend_runner-radare2`  | Análisis e ingeniería inversa de binarios                        |
+| cURL        | `backend_runner-curl`     | Solicitudes HTTP y revisión de respuestas                        |
+| ls          | `backend_runner-ls`       | Listado controlado de archivos dentro del contenedor             |
+| cat         | `backend_runner-cat`      | Lectura controlada de archivos dentro del contenedor             |
+
+El inventario vigente y los parámetros aceptados por cada herramienta se pueden consultar a través de Tool Registry.
+
+## Registro automático de herramientas
+
+El servicio `seeder` registra las herramientas después de que Tool Registry queda disponible.
+
+Para ejecutar nuevamente el seeder:
+
+```powershell
+docker compose run --rm seeder
+```
+
+Para revisar su salida:
+
+```powershell
+docker logs runner-seeder
+```
+
+## Multi-tenant y autenticación interna
+
+El Runner implementa aislamiento lógico por cliente. Los recursos se relacionan de la siguiente forma:
+
+```text
+Supabase Auth
+    └── external_id
+        └── usuarios
+            └── objetivos
+                └── sesiones
+                    └── ejecuciones y resultados
+```
+
+El orquestador crea o recupera el usuario y posteriormente registra el objetivo y la sesión correspondiente a cada campaña.
+
+Las rutas funcionales requieren la cabecera:
+
+```http
+X-Internal-Token: VALOR_DE_INTERNAL_API_TOKEN
+```
+
+Los endpoints `GET /` permanecen públicos para los healthchecks. Si `INTERNAL_API_TOKEN` se deja vacío, la validación se desactiva para facilitar el desarrollo local; este modo no debe utilizarse en producción.
+
+Tool Executor permite agregar `usuario_id` al consultar una tarea:
+
+```http
+GET /ejecutar/tareas/{tarea_id}?usuario_id={usuario_id}
+```
+
+Si la tarea no pertenece al usuario indicado, el servicio responde `404` y evita revelar la existencia de tareas ajenas.
+
+## Registro con Supabase Auth
+
+El endpoint de registro crea la identidad en Supabase Auth y sincroniza un registro interno en `public.usuarios`.
 
 ```http
 POST /auth/register
+```
 
+Ejemplo de solicitud:
 
-el sistema ejecuta el siguiente flujo:
-
-El cliente envía sus datos de registro:
+```json
 {
   "nombre": "Usuario Demo",
   "email": "usuario@email.com",
   "password": "password_segura",
   "rol": "admin"
 }
-
-El API Gateway envía las credenciales hacia Supabase Auth.
-Supabase crea la identidad del usuario y devuelve un identificador único:
-UUID del usuario
-El Runner utiliza ese identificador como:
-external_id
-
-y crea el registro interno correspondiente en la tabla:
-
-public.usuarios
-
-La relación queda establecida de la siguiente forma:
-
-Supabase Auth
-      |
-      | UUID usuario
-      |
-      v
-public.usuarios.external_id
-
-Persistencia del usuario en la base de datos Runner
-
-La tabla interna usuarios almacena la información necesaria para asociar la identidad
-externa con los recursos propios del Runner.
-
-Estructura principal:
-
-usuarios
---------------------------------
-id
-nombre
-email
-password_hash
-rol
-external_id
-created_at
---------------------------------
-
-El campo:
-
-external_id
-
-corresponde directamente al UUID generado por Supabase Auth.
-
-Este identificador permite mantener la relación entre:
-
-Usuario autenticado en Supabase.
-Objetivos registrados.
-Sesiones de ejecución.
-Resultados de herramientas.
-Manejo de contraseñas
-
-La contraseña del usuario no es almacenada dentro de la base de datos del Runner.
-
-Supabase Auth es responsable de:
-
-Almacenamiento seguro de contraseñas.
-Generación de tokens JWT.
-Manejo de sesiones.
-Validación de identidad.
-
-Por esta razón, el campo:
-
-password_hash
-
-se mantiene únicamente como referencia interna:
-
-SUPABASE_AUTH
-
-indicando que la autenticación pertenece a un proveedor externo.
-
-Control de usuarios duplicados
-
-Para garantizar que un usuario de Supabase solo tenga un registro interno dentro
-del Runner se utiliza una restricción única sobre:
-
-external_id
-
-Configuración:
-
-CREATE UNIQUE INDEX ux_usuarios_external_id
-ON public.usuarios(external_id);
-
-Esto permite que el proceso sea idempotente:
-
-Si el usuario ya existe, se reutiliza el registro existente.
-Si el usuario no existe, se crea automáticamente.
-
-De esta forma se evita la creación de múltiples usuarios internos asociados a una
-misma identidad externa.
-
-Flujo completo multi-tenant
-
-El ciclo completo de una ejecución queda:
-
-Usuario
-   |
-   |
-   v
-Supabase Auth
-   |
-   | external_id (UUID)
-   |
-   v
-public.usuarios
-   |
-   | usuario_id
-   |
-   v
-objetivos
-   |
-   | objetivo_id
-   |
-   v
-sesiones
-   |
-   | sesion_id
-   |
-   v
-ejecuciones
-   |
-   v
-Resultados de herramientas
-
-Este diseño permite mantener aislamiento lógico entre clientes (tenants), asegurando que
-cada usuario opere únicamente sobre sus propios objetivos, sesiones y ejecuciones.
-
-
-Queda alineado con lo que realmente tienes implementado ahora: **Supabase Auth → external_id → usuarios → objetivos
-## 🏗️ 1. Arquitectura Base ("Con peras y manzanas")
-
-Cada herramienta en nuestro ecosistema funciona como una "caja negra" independiente. El ciclo de vida de una herramienta es el siguiente:
-
-1. API `FastAPI` recibe una orden de escaneo.
-2. Orquestador levanta un contenedor Docker efímero con la herramienta.
-3. El contenedor ejecuta un script `run.py` que recibe parámetros en JSON, dispara el comando real de la herramienta, captura la consola y la traduce de vuelta a JSON.
-4. El resultado se guarda en la base de datos y el contenedor se destruye inmediatamente.
-
-La estructura de carpetas para una nueva herramienta debe verse así:
-
-```plaintext id="f2rhm5"
-backend_runner/
-├── docker-compose.yml
-└── tools/
-    └── nombre_herramienta/
-        ├── Dockerfile
-        └── run.py
 ```
 
----
+Supabase Auth administra el almacenamiento seguro de contraseñas, los tokens JWT, las sesiones y la validación de identidad. El Runner conserva el UUID retornado en `usuarios.external_id` y utiliza `SUPABASE_AUTH` como referencia interna en `password_hash`; no almacena allí la contraseña enviada por el usuario.
 
-## 🛠️ 2. El Dockerfile (El Entorno)
+La unicidad de `external_id` evita duplicar usuarios:
 
-Utilizamos imágenes base ligeras, como `debian-slim`, o imágenes que ya contienen las herramientas en sus repositorios nativos, como `kalilinux/kali-rolling`, para optimizar el almacenamiento y el caché.
+```sql
+CREATE UNIQUE INDEX ux_usuarios_external_id
+ON public.usuarios(external_id);
+```
 
-Plantilla estándar:
+El proceso es idempotente: si la identidad ya posee un registro interno, este se reutiliza; en caso contrario, se crea.
 
-```dockerfile id="dls3m1"
-# Usar la imagen base adecuada (Kali suele tener todas las herramientas)
+## Endpoints principales
+
+Todas las rutas se pueden revisar en la documentación Swagger de cada servicio.
+
+### API Gateway — puerto 8002
+
+URL base: `http://localhost:8002`
+
+#### Salud, autenticación y contexto multi-tenant
+
+```http
+GET  /
+POST /auth/register
+POST /usuarios/
+POST /objetivos/
+POST /sesiones/
+```
+
+`POST /usuarios/` crea o recupera un usuario por `external_id` y devuelve su `usuario_id`.
+
+#### Herramientas
+
+```http
+GET  /proxy/herramientas
+GET  /proxy/herramientas/para-orquestador
+GET  /proxy/herramientas/{nombre}
+POST /proxy/herramientas
+PUT  /proxy/herramientas/{nombre}
+```
+
+#### Versiones
+
+```http
+GET  /proxy/herramientas/{nombre}/versiones
+GET  /proxy/herramientas/{nombre}/versiones/fallback
+POST /proxy/herramientas/{nombre}/versiones
+PUT  /proxy/herramientas/{nombre}/versiones/{version}/activar
+PUT  /proxy/herramientas/{nombre}/versiones/{version}/marcar-fallida
+```
+
+#### Ejecución
+
+```http
+POST /proxy/ejecutar
+GET  /proxy/tareas/{tarea_id}
+```
+
+### Tool Registry — puerto 8003
+
+URL base: `http://localhost:8003`
+
+```http
+GET  /
+GET  /herramientas/
+GET  /herramientas/para-orquestador
+GET  /herramientas/{nombre}
+POST /herramientas/
+PUT  /herramientas/{nombre}
+
+GET  /herramientas/{nombre}/versiones
+GET  /herramientas/{nombre}/versiones/fallback
+POST /herramientas/{nombre}/versiones
+PUT  /herramientas/{nombre}/versiones/{version}/activar
+PUT  /herramientas/{nombre}/versiones/{version}/marcar-fallida
+```
+
+### Tool Executor — puerto 8004
+
+URL base: `http://localhost:8004`
+
+```http
+GET  /
+POST /ejecutar/
+GET  /ejecutar/tareas/{tarea_id}
+```
+
+## Pruebas de la API
+
+Los ejemplos siguientes utilizan PowerShell y envían el token interno. Si la autenticación está desactivada en desarrollo, se puede omitir la cabecera.
+
+### Listar herramientas
+
+```powershell
+$headers = @{ "X-Internal-Token" = "VALOR_DE_INTERNAL_API_TOKEN" }
+
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8002/proxy/herramientas" `
+  -Headers $headers
+```
+
+### Ejecutar Nmap en un objetivo autorizado
+
+Utiliza un `sesion_id` existente y asociado al usuario que realiza la solicitud.
+
+```powershell
+$headers = @{ "X-Internal-Token" = "VALOR_DE_INTERNAL_API_TOKEN" }
+
+$body = @{
+  herramienta = "nmap"
+  params = @{
+    objetivo = "scanme.nmap.org"
+    tipo_escaneo = "-sV"
+    velocidad = 3
+    puertos = "80,443"
+  }
+  sesion_id = 61
+  orden_ejecucion = 1
+} | ConvertTo-Json -Depth 5
+
+$respuesta = Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8002/proxy/ejecutar" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body $body
+
+$respuesta
+```
+
+La respuesta entrega un `tarea_id`.
+
+### Consultar una tarea
+
+```powershell
+Invoke-RestMethod -Method Get `
+  -Uri "http://localhost:8002/proxy/tareas/ID_TAREA" `
+  -Headers $headers
+```
+
+Reemplaza `ID_TAREA` por el identificador recibido.
+
+## Integración de una herramienta nueva
+
+### 1. Crear la carpeta
+
+```text
+backend_runner/tools/nueva_herramienta/
+├── Dockerfile
+└── run.py
+```
+
+### 2. Crear el Dockerfile
+
+Utiliza una imagen base adecuada y elimina la caché del administrador de paquetes para reducir el tamaño final.
+
+```dockerfile
 FROM kalilinux/kali-rolling
 
-# Actualizar e instalar python3 y la herramienta específica
 RUN apt-get update && \
     apt-get install -y python3 nombre_de_la_herramienta && \
-    rm -rf /var/lib/apt/lists/* # LÍNEA VITAL para ahorrar espacio en disco
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY run.py /app/run.py
 
-# IMPORTANTE: Usar ENTRYPOINT y no CMD para evitar el error "OCI runtime create failed"
-# al pasarle el JSON de configuración desde el orquestador.
 ENTRYPOINT ["python3", "/app/run.py"]
 ```
 
----
+El uso de `ENTRYPOINT` permite que Tool Executor entregue el JSON de configuración como argumento al iniciar el contenedor.
 
-## 🐍 3. El run.py (El Traductor a JSON)
+### 3. Crear el adaptador run.py
 
-Este script es el puente entre el mundo del texto plano, la consola, y la API REST, JSON.
+El adaptador debe leer los parámetros, construir el comando sin utilizar una shell, capturar la salida y devolver un único objeto JSON.
 
-Plantilla estándar:
-
-```python id="svw42a"
-import sys
+```python
 import json
 import subprocess
+import sys
+
 
 def main():
     try:
-        # 1. Leer inputs desde los argumentos del Orquestador (Parche OCI)
-        if len(sys.argv) > 1:
-            input_data = sys.argv[1]
-        else:
-            input_data = sys.stdin.read()
-            
+        input_data = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
         params = json.loads(input_data)
-        
-        # 2. Extraer parámetros (Ejemplo)
         objetivo = params.get("objetivo", "127.0.0.1")
 
-        # 3. Armar y ejecutar el comando
         comando = ["herramienta", "-parametro", objetivo]
-        proceso = subprocess.run(comando, capture_output=True, text=True)
+        proceso = subprocess.run(
+            comando,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
-        # 4. Procesar la salida (Regex, JSON nativo, etc.)
-        # ... lógica de parseo aquí ...
-
-        # 5. Estructurar el JSON de salida estándar para Dani-ETH
         resultado = {
             "objetivo_escaneado": objetivo,
-            "total_hallazgos": 0, # Reemplazar con variable real
-            "raw_output": proceso.stdout + proceso.stderr
+            "total_hallazgos": 0,
+            "raw_output": proceso.stdout + proceso.stderr,
         }
 
         print(json.dumps({
             "error": None,
             "resultado": resultado,
-            "codigo_salida": proceso.returncode
+            "codigo_salida": proceso.returncode,
+        }))
+    except Exception as exc:
+        print(json.dumps({
+            "error": str(exc),
+            "resultado": None,
+            "codigo_salida": 1,
         }))
 
-    except Exception as e:
-        print(json.dumps({
-            "error": str(e),
-            "resultado": None,
-            "codigo_salida": 1
-        }))
 
 if __name__ == "__main__":
     main()
 ```
 
----
+Valida y limita los parámetros antes de incorporarlos al comando. No utilices `shell=True` con datos proporcionados por el usuario.
 
-## 🐳 4. Integración en docker-compose.yml
+### 4. Agregar el builder a docker-compose.yml
 
-Para que el orquestador sepa que la herramienta existe, debe registrarse como un servicio "builder" en el Compose.
-
-```yaml id="cx1z5n"
+```yaml
 tool_nuevaherramienta:
   build:
     context: tools/nuevaherramienta
@@ -365,70 +511,28 @@ tool_nuevaherramienta:
   entrypoint: ["echo", "imagen lista"]
 ```
 
-Asegúrate de respetar la indentación vertical estricta del YAML para evitar errores de parseo.
+Construye la imagen:
 
----
-
-## 💻 5. Comandos de Terminal Clave
-
-### Construcción y Despliegue
-
-Construir una herramienta específica:
-
-```bash id="xi2qiy"
+```bash
 docker compose build tool_nuevaherramienta
 ```
 
-Levantar toda la infraestructura base:
+### 5. Registrar la herramienta
 
-```bash id="lhyh6h"
-docker compose up -d
-```
+Desde Swagger, utiliza `POST /herramientas/` en Tool Registry o la ruta equivalente del API Gateway.
 
-### Mantenimiento y Limpieza (Liberar Espacio)
-
-Borrar imágenes huérfanas, como intentos fallidos de build:
-
-```bash id="5yi7be"
-docker image prune
-```
-
-Limpieza profunda y segura de imágenes viejas, respetando los contenedores activos:
-
-```bash id="5huws3"
-docker image prune -a --filter "until=24h"
-```
-
-Ver logs en tiempo real del Orquestador:
-
-```bash id="7w7mo4"
-docker logs -f runner-tool-executor
-```
-
----
-
-## 🚀 6. Registro en FastAPI y Base de Datos
-
-Una vez que la imagen Docker está construida, la herramienta debe registrarse en la plataforma para que el Frontend pueda consumirla.
-
-### A. Registrar la Herramienta (Swagger: POST /herramientas/)
-
-Se debe enviar un esquema con la definición completa.
-
-Ejemplo:
-
-```json id="ek86b5"
+```json
 {
   "nombre": "nombre_herramienta",
-  "nombre_UI": "Nombre Amigable UI",
+  "nombre_UI": "Nombre de la herramienta",
   "descripcion": "Descripción de lo que hace.",
   "casos_usos": ["caso 1", "caso 2"],
-  "categoria": "categoria correspondiente",
+  "categoria": "categoria_correspondiente",
   "esquema_input": {
     "objetivo": {
       "tipo": "string",
       "requerido": true,
-      "descripcion": "IP o Dominio"
+      "descripcion": "Dirección IP, dominio o URL autorizada"
     }
   },
   "esquema_output": {
@@ -442,13 +546,13 @@ Ejemplo:
 }
 ```
 
-Nota: Tras esto, asociar manualmente el ID generado en la tabla `versiones_herramientas` en Supabase.
+Verifica que la versión creada quede asociada a la herramienta y que la imagen indicada coincida con la construida por Docker Compose.
 
-### B. Ejecutar una Prueba (Swagger: POST /ejecutar/)
+### 6. Validar el pipeline
 
-Para validar el pipeline completo:
+Ejecuta una prueba sobre un objetivo autorizado:
 
-```json id="6py28k"
+```json
 {
   "herramienta": "nombre_herramienta",
   "params": {
@@ -459,4 +563,114 @@ Para validar el pipeline completo:
 }
 ```
 
-El resultado JSON validado se guardará en la tabla de ejecuciones de Supabase.
+Comprueba la respuesta de la tarea, los logs de Tool Executor y el registro creado en la tabla de ejecuciones.
+
+## Operación y mantenimiento
+
+### Logs
+
+Todos los servicios:
+
+```powershell
+docker compose logs -f
+```
+
+Servicios específicos:
+
+```powershell
+docker logs -f runner-api-gateway
+docker logs -f runner-tool-registry
+docker logs -f runner-tool-executor
+docker logs -f runner-seeder
+docker logs -f runner-redis
+```
+
+### Detener el sistema
+
+```powershell
+docker compose down
+```
+
+Para eliminar también los volúmenes administrados por Docker Compose:
+
+```powershell
+docker compose down --volumes
+```
+
+Este comando no elimina la información almacenada en una base PostgreSQL externa.
+
+### Reconstruir servicios
+
+Todo el Runner:
+
+```powershell
+docker compose down
+docker compose up --build -d
+```
+
+Un servicio específico:
+
+```powershell
+docker compose build api_gateway
+docker compose up -d api_gateway
+```
+
+Cambia `api_gateway` por `tool_registry`, `tool_executor` o el builder de una herramienta según corresponda.
+
+### Limpiar imágenes no utilizadas
+
+Elimina imágenes huérfanas:
+
+```bash
+docker image prune
+```
+
+Elimina imágenes no utilizadas con más de 24 horas, respetando las imágenes asociadas a contenedores activos:
+
+```bash
+docker image prune -a --filter "until=24h"
+```
+
+Revisa la lista antes de confirmar una limpieza de imágenes en entornos compartidos.
+
+### Limitación conocida
+
+El API Gateway contiene una ruta general `GET /proxy/tareas`, pero la versión documentada de Tool Executor solamente expone la consulta individual:
+
+```http
+GET /ejecutar/tareas/{tarea_id}
+```
+
+El listado general requiere implementar primero el endpoint equivalente en Tool Executor.
+
+## Seguridad de los objetivos
+
+Actualmente el Runner acepta una dirección IP, un dominio o una URL como objetivo y opera bajo un modelo de confianza: quien solicita la ejecución es responsable de contar con autorización.
+
+Los controles implementados incluyen:
+
+* Separación lógica de recursos por tenant.
+* Registro de solicitudes y resultados.
+* Ejecución aislada en contenedores Docker efímeros.
+* Acceso al Docker Engine mediante Docker Socket Proxy.
+* Token interno compartido entre servicios autorizados.
+
+El Runner todavía no valida la propiedad del objetivo. Para una versión productiva se recomienda implementar una allowlist por tenant y rechazar cualquier objetivo que no esté previamente autorizado.
+
+## Comandos rápidos
+
+```powershell
+cd backend_runner
+Copy-Item .env.example .env
+docker compose up --build -d
+docker compose ps
+```
+
+Documentación local:
+
+```text
+API Gateway:   http://localhost:8002/docs
+Tool Registry: http://localhost:8003/docs
+Tool Executor: http://localhost:8004/docs
+```
+
